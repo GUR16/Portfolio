@@ -1,0 +1,172 @@
+/*********************************  REXX **************************************/
+/*                                                                            */
+/* ------------------------------- README ----------------------------------- */
+/*                                                                            */
+/* ПРОГРАММА ЗАПУСКАЕТСЯ С ПОМОЩЬЮ DUAGRJOB                                   */
+/* ОПИСАНИЕ РАБОТЫ ПРОГРАММЫ СМ. DUAGRJOB                                     */
+/*                                                                            */
+/******************************************************************************/
+/*                         ОСНОВНАЯ ПРОГРАММА (MAIN)                          */
+/******************************************************************************/
+   RETCODE = 0
+
+/* --- Обьявляем глобально массив активных классов -------------------------- */
+     array_activeClasses.0 = ""
+
+/* --- Вызываем функции ----------------------------------------------------- */
+     call getActiveClasses_INFO
+     call PARSE_accessLists a
+
+   EXIT RETCODE
+/******************************************************************************/
+/*                           ПАРСЕР ACTIVE CLASSES                            */
+/******************************************************************************/
+/* -------------------------------------------------------------------------- */
+/* СОБИРАЕМ ТЕКУЩЕЕ СОСТОЯНИЕ ОПЦИЙ ДЛЯ ПОЛУЧЕНИЯ ВСЕХ ДОСТУПНЫХ
+   ACTIVE CLASSES И ПАРСИМ ИХ В МАССИВ arrayActiveClasses                     */
+/* -------------------------------------------------------------------------- */
+/* --- Сбор активных классов и запись их в стем RACF. ----------------------- */
+   getActiveClasses_INFO:
+   quiet = OutTrap("RACF.")
+   "SETROPTS LIST"
+   quiet = OutTrap("OFF")
+/* --- Объявление внутренних переменных ------------------------------------- */
+   arrayResultString.0 = ""
+   process = ''
+   index = 1
+   a = 1
+/* --- Цикл для обработки стема RACF. --------------------------------------- */
+   DO RACF_index = 1 to RACF.0
+/* --- Записываем значение элемента стема в переменную string_setrList ------ */
+     string_setrList = RACF.RACF_index
+/* --- Проверяем наличие конкретной строки для обнаружения начала записей с
+       активными классами --------------------------------------------------- */
+     if (pos("ACTIVE CLASSES =",string_setrList) > 0) then do
+/* --- Выставление флага процесса записи в позицию 'ON' --------------------- */
+       process = 'ON'
+/* --- Запись значения начала позиции фразы в строке для ее извлечения ------ */
+       temp = pos("ACTIVE CLASSES =",string_setrList)
+     end
+/* --- Проверка наличия фразы в строке для остановки записи активных классов- */
+     if (pos("GENERIC PROFILE CLASSES =",string_setrList) > 0) then,
+/* --- Выставление флага процесса записи в позицию 'OFF' -------------------- */
+       process = 'OFF'
+/* --- Проверка активности флага процесса записи активных классов ----------- */
+     if (process = 'ON') then
+       do while string_setrList >< ''
+/* --- Парсим строки с активными классами по 1 в эллемент массива
+       array_activeClasses -------------------------------------------------- */
+         parse var string_setrList resultString '' string_setrList
+         arrayResultString.index = substr(resultString,temp+16,90)
+           do while arrayResultString.index <> ''
+             parse var arrayResultString.index array_activeClasses.a ,
+               arrayResultString.index
+             a = a + 1
+           end
+         index = index + 1
+       end
+   END
+   RETURN
+/******************************************************************************/
+/*                            ПАРСЕР ACCESS LISTS                             */
+/******************************************************************************/
+   PARSE_accessLists:
+/* --- Инициализируем входную переменную счетчика активных классов ---------- */
+    count_activeClasses = ARG(1)
+    count_activeClasses = count_activeClasses - 1
+/* --- Объявление внутренних переменных ------------------------------------- */
+    arrayResultString.0 = ""
+    parse_arrayResult.0 = ""
+    process = 'OFF'
+    index = 1
+    l = 1
+/* --- Запускаем цикл по всем активным классам ------------------------------ */
+    DO B = 4 TO count_activeClasses
+      quiet = OutTrap("RLIST.")
+/* --- Исключаем данные классы из списка активных классов ------------------- */
+      if (pos("DIGTCERT",array_activeClasses.B)>0) ! ,
+         (pos("DIGTCRIT",array_activeClasses.B)>0) ! ,
+         (pos("DIGTNMAP",array_activeClasses.B)>0) ! ,
+         (pos("DIGTRING",array_activeClasses.B)>0) ! ,
+         (pos("STARTED",array_activeClasses.B)>0) then do
+      end
+/* --- Вызываем команду для получения информации по активному классу и
+       листу доступа к нему ------------------------------------------------- */
+      else  address tso "RLIST "array_activeClasses.B" * AUTHUSER"
+      quiet = OutTrap("OFF")
+/* --- Запускаем цикл обработки полученной информации для парсинга по ТЗ ---- */
+      DO RLIST_index = 1 TO RLIST.0
+/* --- Присваиваем значение элемента массива строке ------------------------- */
+        string_RList = RLIST.RLIST_index
+/* --- Проверяем наличие конкретной строки для обнаружения начала записей --- */
+        if (pos("-----      ----",string_RList)>0) ! ,
+           (pos("----      ------   ------ -----",string_RList)>0) then ,
+/* --- Выставление флага процесса записи в позицию 'ON' --------------------- */
+          process = 'ON'
+/* --- Получение позиции пробелов в строке для обнаружения окончания записей  */
+       position = pos("                                                       ",
+"                   ",string_RList)
+/* --- Проверка наличия данной позиции в строке ----------------------------- */
+        if (position > 0) then,
+/* --- Выставление флага процесса записи в позицию 'OFF' -------------------- */
+          process = 'OFF'
+/* --- Проверка активности флага процесса записи активных классов ----------- */
+        if (process = 'ON') & (position=0) then
+/* --- Парсим строки с информацией профилей и листов доступа по 1
+       элементу в массив ---------------------------------------------------- */
+          do while string_RList >< ''
+            parse var string_RList resultString '' string_RList
+            arrayResultString.index = resultString
+            index = index + 1
+          end
+      END
+    END
+/* --- Указание размерности массива ----------------------------------------- */
+    arrayResultString.0 = index
+    index = 1
+/* --- Запуск цикла формирования конечных форматированных строк по ТЗ ------- */
+    DO index = 1 TO arrayResultString.0
+/* --- Проверка наличия данной позиции в строке ----------------------------- */
+      if (pos("-----      ----",arrayResultString.index)>0) then do
+        index = index + 1
+/* --- Запись значения названия класса и профиля в переменные --------------- */
+        parse var arrayResultString.index CLASS +11 NAME " "
+        process = 'END'
+        index = index - 1
+      end
+/* --- Проверка наличия данной позиции в строке ----------------------------- */
+   if (pos("----      ------   ------ -----",arrayResultString.index)>0) then,
+/* --- Выставление флага процесса записи в позицию 'START'------------------- */
+        process = 'START'
+/* --- Проверка активности флага процесса записи ---------------------------- */
+      if (process = 'START') then do
+/* --- Присвоение значения позиции в строке --------------------------------- */
+        k=pos("-------------------------------------",arrayResultString.index)
+/* --- Исключение данных значений из записей -------------------------------- */
+        if (pos("NO USERS IN ACCES",arrayResultString.index)>0) ! ,
+           (pos("----      ------",arrayResultString.index)>0) ! ,
+           (k>0) then do
+        end
+        else do
+/* --- Присвоение пременной значения имени пользователя и полномочий профиля
+       активного класса ----------------------------------------------------- */
+          temp_PString = substr(arrayResultString.index,1,17)
+/* --- Конкатенация результирующей строки ----------------------------------- */
+          parse_arrayResult.l=""
+          parse_arrayResult.l=INSERT(CLASS,parse_arrayResult.l,1)
+          parse_arrayResult.l=INSERT(temp_PString,parse_arrayResult.l,10)
+          parse_arrayResult.l=INSERT(NAME,parse_arrayResult.l,28)
+/* --- Присвоение переменной длиный элемента массива ------------------------ */
+          lengthh=length(parse_arrayResult.l)
+          llpos=lengthh+(61-lengthh)+5
+          do while (length(parse_arrayResult.l)<lengthh+llpos)
+            parse_arrayResult.l=INSERT("/",parse_arrayResult.l,lengthh+1)
+          end
+/* --- Запись стема сформированных строк в набор данных --------------------- */
+   "EXECIO * DISKW DUAGOUT (STEM parse_arrayResult."
+   "EXECIO * DISKW DUAGOUT (FINIS)"
+          l = l + 1
+        end
+      end
+    END
+    RETURN
